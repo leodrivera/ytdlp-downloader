@@ -313,7 +313,7 @@ def main() -> int:
         "-O",
         "--output-name",
         metavar="TEMPLATE",
-        help="Output filename template (e.g. %(title)s.%(ext)s or myfile.%(ext)s). "
+        help="Output filename template (e.g. %%(title)s.%%(ext)s or myfile.%%(ext)s). "
         "Placeholders: https://github.com/yt-dlp/yt-dlp#output-template",
     )
     parser.add_argument(
