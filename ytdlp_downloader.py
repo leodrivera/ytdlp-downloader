@@ -1,12 +1,19 @@
 """
 Requirements to run this script:
-  - yt_dlp: pip install yt-dlp
-
-  - Deno (JavaScript runtime, required for some extractors):
+  - yt_dlp: pip install "yt-dlp[default]"  (use [default] so EJS solver scripts are included for YouTube)
+  - Deno (JavaScript runtime, required for YouTube and some extractors), min 2.0:
     https://docs.deno.com/runtime/getting_started/installation/
     - Windows: winget install DenoLand.Deno  OR  irm https://deno.land/install.ps1 | iex
     - Linux: curl -fsSL https://deno.land/install.sh | sh
     - macOS: brew install deno
+
+  If you see "n challenge" / "found 0 n function possibilities" on YouTube:
+  - Update: pip install -U "yt-dlp[default]"
+  - Or pass: --remote-components ejs:npm  (lets yt-dlp fetch solver scripts; requires Deno/Bun)
+  See: https://github.com/yt-dlp/yt-dlp/wiki/EJS
+
+  YouTube login: OAuth is no longer supported. Use cookies (--cookies-file or --cookies).
+  See: https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies
 """
 import argparse
 import os
@@ -17,7 +24,7 @@ import platform
 import subprocess
 import re
 
-from yt_dlp import YoutubeDL
+from yt_dlp import YoutubeDL, parse_options
 from yt_dlp.utils import DownloadError
 
 
@@ -151,9 +158,6 @@ def check_tool(tool: str) -> bool:
     except subprocess.TimeoutExpired:
         print(f"Error: {tool} command timed out.", flush=True)
         return False
-    except subprocess.CalledProcessError as e:
-        print(f"Error: {tool} execution failed: {e}", flush=True)
-        return False
     except FileNotFoundError:
         print(f"Error: {tool} not found in PATH.", flush=True)
         return False
@@ -180,163 +184,147 @@ def check_dependencies() -> None:
     print("All dependencies validated successfully.", flush=True)
 
 
-def list_formats(url: str) -> int:
-    """List all available formats for the given URL."""
-    print(f"Fetching available formats for: {url}", flush=True)
-    print("-" * 80, flush=True)
-
-    ydl_opts = {
-        "listformats": True,  # This makes yt-dlp print formats and exit
-        "quiet": False,  # Show output
-    }
-
-    try:
-        with YoutubeDL(ydl_opts) as ydl:
-            ydl.extract_info(url, download=False)
-        return 0
-    except Exception as e:
-        print(f"Error listing formats: {e}", flush=True)
-        return 1
-
-
 def build_ydl_opts(args: argparse.Namespace) -> Dict[str, Any]:
-    """Build yt-dlp options based on args."""
-    is_audio_only = args.audio_only is not None
+    """Build default yt-dlp options. Use extra args (e.g. -F, -f, -x) for yt-dlp options."""
+    # Video: container strategy; format/audio/playlist/resume come from extra if passed
+    if args.container_strategy == "best-mp4":
+        format_str = (
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[ext=mp4]+bestaudio/bestvideo+bestaudio[ext=m4a]"
+        )
+    else:
+        format_str = "bestvideo+bestaudio/best"
 
-    if is_audio_only:
-        # Audio-only downloads always use FFmpegExtractAudio
-        format_str = args.format or "bestaudio/best"
+    if args.container_strategy == "force-mp4":
         postprocessors = [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": args.audio_only,  # 'mp3' or 'm4a'
-                "preferredquality": str(args.audio_quality),  # e.g., '192'
-            }
+            {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
         ]
     else:
-        # Video downloads: apply container strategy
-        if args.container_strategy == "best-mp4":
-            # Prefer MP4-compatible formats (H.264/AAC), remux only - no conversion
-            format_str = args.format or (
-                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
-                "bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/"
-                "bestvideo[ext=mp4]+bestaudio/bestvideo+bestaudio[ext=m4a]"
-            )
-        else:
-            format_str = args.format or "bestvideo+bestaudio/best"
+        postprocessors = [
+            {"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}
+        ]
 
-        if args.container_strategy == "force-mp4":
-            # Force conversion to MP4 (may re-encode, slower but guarantees MP4)
-            postprocessors = [
-                {
-                    "key": "FFmpegVideoConvertor",
-                    "preferedformat": "mp4",
-                }
-            ]
-        elif args.container_strategy in ("fast-remux", "best-mp4"):
-            # Fast remux (only copies streams). best-mp4 prefers MP4-compatible formats.
-            postprocessors = [
-                {
-                    "key": "FFmpegVideoRemuxer",
-                    "preferedformat": "mp4",
-                }
-            ]
-        else:
-            # This should never happen due to argparse choices validation
-            raise ValueError(
-                f"Invalid container strategy: '{args.container_strategy}'. "
-                f"Expected 'fast-remux', 'best-mp4', or 'force-mp4'."
-            )
-
-    outtmpl = (
-        os.path.join(args.output_dir, args.output_name)
-        if args.output_name
-        else os.path.join(args.output_dir, "%(title)s.%(ext)s")
-    )
+    # Default: current dir. Override with yt-dlp -o in extra (path + template).
+    outtmpl = os.path.join(".", "%(title)s.%(ext)s")
     ydl_opts: Dict[str, Any] = {
         "format": format_str,
         "outtmpl": outtmpl,
         "logger": CustomLogger(),
         "progress_hooks": [progress_hook],
-        "postprocessor_hooks": [postprocessor_hook],  # Hook for post-processor progress
+        "postprocessor_hooks": [postprocessor_hook],
         "postprocessors": postprocessors,
-        "noplaylist": not args.playlist,  # If --playlist flag present, download playlist
+        "noplaylist": True,  # override with --yes-playlist in extra to download playlists
+        "continuedl": True,
+        "nooverwrites": False,
     }
-
-    # Resume support (enabled by default)
-    if not args.no_resume:
-        ydl_opts["continuedl"] = True  # continue partial downloads if possible
-        ydl_opts["nooverwrites"] = False  # allow resuming without forcing overwrite
-
     return ydl_opts
+
+
+def _run_ytdlp_update_check() -> tuple[bool, str, bool]:
+    """
+    Run yt-dlp -U and return (outdated, combined_output, is_pip_install).
+    outdated: True if a newer version is available (or update failed).
+    is_pip_install: True if output indicates yt-dlp was installed via pip.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "yt_dlp", "-U"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "Warning: Update check timed out.", False
+    except FileNotFoundError:
+        return False, "", False
+
+    out = (result.stdout or "").strip()
+    err = (result.stderr or "").strip()
+    combined = "\n".join(filter(None, [out, err]))
+
+    # Non-zero exit usually means update failed (e.g. outdated + pip install)
+    outdated = result.returncode != 0
+    pip_msg = "you installed yt-dlp with pip" in combined.lower() or "use that to update" in combined.lower()
+    return outdated, combined, pip_msg
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Download videos or audio using yt-dlp with cross-platform support.",
+        add_help=False,
+        description="Download videos or audio using yt-dlp with cross-platform support. "
+        "Pass URL and options as with yt-dlp (e.g. URL, -F URL, -U, --version, --cookies). "
+        "Use -h/--help for yt-dlp help, --script-help for this script's help.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Examples:\n"
+            "Examples (use yt-dlp options for -F, -f, -x, --yes-playlist, etc.):\n"
             "  # List available formats\n"
-            '  python video_downloader.py -F "https://www.youtube.com/watch?v=VIDEO_ID"\n\n'
-            "  # Basic video download (single video, best-mp4 default)\n"
-            '  python video_downloader.py "https://www.youtube.com/watch?v=VIDEO_ID"\n\n'
+            '  python ytdlp_downloader.py -F "https://www.youtube.com/watch?v=VIDEO_ID"\n\n'
+            "  # Basic video download\n"
+            '  python ytdlp_downloader.py "https://www.youtube.com/watch?v=VIDEO_ID"\n\n'
             "  # Download entire playlist\n"
-            '  python video_downloader.py --playlist "https://www.youtube.com/playlist?list=PLxxxxxx"\n\n'
-            "  # Audio-only download\n"
-            '  python video_downloader.py --audio-only mp3 --audio-quality 192 "URL" -o ./downloads\n\n'
-            "  # Fast remux strategy (keeps WebM if incompatible, much faster)\n"
-            '  python video_downloader.py --container-strategy fast-remux "URL"\n\n'
-            "  # Best MP4 without conversion (prefers MP4-compatible formats, remux only)\n"
-            '  python video_downloader.py --container-strategy best-mp4 "URL"\n\n'
-            "  # Download playlist with fast remux\n"
-            '  python video_downloader.py --playlist --container-strategy fast-remux "PLAYLIST_URL"\n\n'
-            "  # Force MP4 strategy (guarantees MP4, may be slower)\n"
-            '  python video_downloader.py --container-strategy force-mp4 "URL"\n\n'
-            "  # Custom format with fast remux\n"
-            '  python video_downloader.py -f "bestvideo[height<=1080]+bestaudio" --container-strategy fast-remux "URL"\n\n'
+            '  python ytdlp_downloader.py --yes-playlist "https://www.youtube.com/playlist?list=PLxxxxxx"\n\n'
+            "  # Audio-only (mp3, 192k)\n"
+            '  python ytdlp_downloader.py -x --audio-format mp3 --audio-quality 192 "URL" -o "./downloads/%(title)s.%(ext)s"\n\n'
+            "  # Skip update check (check is on by default; script stops if outdated)\n"
+            '  python ytdlp_downloader.py --no-check-updates "URL"\n\n'
+            "  # Fast remux strategy\n"
+            '  python ytdlp_downloader.py --container-strategy fast-remux "URL"\n\n'
+            "  # Best MP4, remux only\n"
+            '  python ytdlp_downloader.py --container-strategy best-mp4 "URL"\n\n'
+            "  # Playlist with fast remux\n"
+            '  python ytdlp_downloader.py --yes-playlist --container-strategy fast-remux "PLAYLIST_URL"\n\n'
+            "  # Force MP4 (re-encode if needed)\n"
+            '  python ytdlp_downloader.py --container-strategy force-mp4 "URL"\n\n'
+            "  # Custom format\n"
+            '  python ytdlp_downloader.py -f "bestvideo[height<=1080]+bestaudio" --container-strategy fast-remux "URL"\n\n'
+            "  # Video format ID X + audio format ID Y (list IDs with -F URL first)\n"
+            '  python ytdlp_downloader.py -f "137+140" "URL"   # e.g. 1080p video + m4a audio\n'
+            "  # Single format ID that already has video+audio (e.g. 18 = 360p mp4)\n"
+            '  python ytdlp_downloader.py -f 18 "URL"\n\n'
             "  # Disable resume\n"
-            '  python video_downloader.py --no-resume "URL"\n\n'
+            '  python ytdlp_downloader.py --no-continue "URL"\n\n'
+            "  # YouTube login via cookies (yt-dlp options; OAuth no longer supported)\n"
+            '  python ytdlp_downloader.py --cookies cookies.txt "URL"\n'
+            '  python ytdlp_downloader.py --cookies-from-browser chrome "URL"\n\n'
+            "  # Export browser cookies TO a file (no URL = export only):\n"
+            '  python ytdlp_downloader.py --cookies-from-browser chrome --cookies cookies.txt\n'
+            "  # Then use the file: --cookies cookies.txt \"URL\". Export includes ALL sites; protect the file.\n\n"
+            "  # Output template (yt-dlp -o after URL; path + template in one):\n"
+            '  python ytdlp_downloader.py "URL" -o "%(title)s [%(id)s].%(ext)s"\n'
+            '  python ytdlp_downloader.py "PLAYLIST_URL" --yes-playlist -o "./out/%(playlist)s/%(playlist_index)s - %(title)s.%(ext)s"\n'
+            "  Full docs: https://github.com/yt-dlp/yt-dlp#output-template\n\n"
+            "  # Options that do not require a URL (passed through to yt-dlp):\n"
+            "  python ytdlp_downloader.py -h             # yt-dlp help\n"
+            "  python ytdlp_downloader.py --script-help  # This script's help\n"
+            "  python ytdlp_downloader.py --version     # Print yt-dlp version\n\n"
+            "  Cookies: two different uses\n"
+            "  (A) EXPORT browser cookies TO a file (no URL; creates/overwrites the file):\n"
+            "      --cookies-from-browser chrome --cookies cookies.txt\n"
+            "      yt-dlp reads Chrome cookies and writes them to cookies.txt. Use that file later with (B).\n"
+            "      Warning: exports cookies for ALL sites from the browser; protect the file.\n"
+            "  (B) USE a cookie file FOR downloads (with URL):\n"
+            "      --cookies cookies.txt \"URL\"\n"
+            "      Reads cookies from the file for that download.\n"
+            "  (C) USE browser cookies directly (with URL, no file):\n"
+            "      --cookies-from-browser chrome \"URL\"\n\n"
+            "  If you get 'Failed to decrypt with DPAPI' (e.g. Windows + Chrome), use a browser\n"
+            "  extension to export cookies to a file, then --cookies FILE \"URL\". Example extension:\n"
+            "  Get cookies.txt LOCALLY (Netscape format):\n"
+            "  https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc\n\n"
         ),
     )
-    parser.add_argument("url", help="Video or playlist URL to download")
     parser.add_argument(
-        "-F",
-        "--list-formats",
+        "--script-help",
         action="store_true",
-        help="List all available formats and exit (equivalent to yt-dlp -F)",
+        help="Show this script's help (options and examples). Use -h or --help for yt-dlp help.",
     )
     parser.add_argument(
-        "-o", "--output-dir", default=".", dest="output_dir", help="Output directory (default: current)"
-    )
-    parser.add_argument(
-        "-O",
-        "--output-name",
-        metavar="TEMPLATE",
-        help="Output filename template (e.g. %%(title)s.%%(ext)s or myfile.%%(ext)s). "
-        "Placeholders: https://github.com/yt-dlp/yt-dlp#output-template",
-    )
-    parser.add_argument(
-        "-f",
-        "--format",
-        help="Format string (video default: bestvideo+bestaudio/best; audio default: bestaudio/best)",
-    )
-    parser.add_argument(
-        "--audio-only", choices=["mp3", "m4a"], help="Download audio only as mp3 or m4a"
-    )
-    parser.add_argument(
-        "--audio-quality",
-        type=int,
-        default=192,
-        help="Audio quality in kbps (default: 192)",
-    )
-    parser.add_argument(
-        "--no-resume", action="store_true", help="Disable resume support"
-    )
-    parser.add_argument(
-        "--playlist",
-        action="store_true",
-        help="Download entire playlist if URL contains one (default: download single video only)",
+        "--check-updates",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        dest="check_updates",
+        help="Check for yt-dlp updates and stop if outdated.",
     )
     parser.add_argument(
         "--container-strategy",
@@ -349,40 +337,102 @@ def main() -> int:
             "'force-mp4' = Forces MP4 output, may re-encode incompatible codecs (slower, guarantees MP4)."
         ),
     )
+    args, extra = parser.parse_known_args()
 
-    args = parser.parse_args()
+    if args.script_help:
+        parser.print_help()
+        return 0
 
-    # If user wants to list formats, do that and exit (no need to check dependencies)
-    if args.list_formats:
-        return list_formats(args.url)
+    if not extra:
+        parser.error("pass a URL and/or yt-dlp options (e.g. URL, -U, --version, -F URL)")
+
+    # Let yt-dlp parse all arguments (URL, -F, -f, -U, etc.); no argv[0] so URLs are correct
+    try:
+        parsed = parse_options(extra)
+    except Exception as e:
+        print(f"Error parsing yt-dlp arguments: {e}", flush=True)
+        return 1
+
+    ydl_opts = {**build_ydl_opts(args), **(parsed.ydl_opts or {})}
+
+    # No URLs: delegate to yt-dlp for -U, --version, cookie export, etc.
+    if not parsed.urls:
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "yt_dlp"] + extra,
+                shell=False,
+            )
+            return result.returncode
+        except FileNotFoundError:
+            print("Error: Could not run yt-dlp (python -m yt_dlp). Ensure yt-dlp is installed.", flush=True)
+            return 1
+
+    # Initial validation: check for yt-dlp updates when we have URLs; stop if outdated.
+    if args.check_updates:
+        print("Checking for yt-dlp updates...", flush=True)
+        outdated, update_output, is_pip_install = _run_ytdlp_update_check()
+        if update_output:
+            print(update_output, flush=True)
+        if outdated:
+            if is_pip_install:
+                try:
+                    answer = input("Update yt-dlp via pip now? [y/N]: ").strip().lower()
+                except EOFError:
+                    answer = "n"
+                if answer in ("y", "yes"):
+                    print("Running: pip install -U \"yt-dlp[default]\"", flush=True)
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "-U", "yt-dlp[default]", "--no-warn-script-location"],
+                        shell=False,
+                    )
+                    if result.returncode == 0:
+                        print("yt-dlp updated successfully. Run the script again to continue.", flush=True)
+                        return 0
+                    print("Update failed. Please run: pip install -U \"yt-dlp[default]\"", flush=True)
+                else:
+                    print("Script stopped. Update yt-dlp and run again, or use --no-check-updates to skip.", flush=True)
+            else:
+                print("Script stopped. Update yt-dlp and run again, or use --no-check-updates to skip.", flush=True)
+            return 1
+        ydl_opts["warn_when_outdated"] = True
+    else:
+        ydl_opts["warn_when_outdated"] = False
 
     check_dependencies()
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    ydl_opts = build_ydl_opts(args)
 
     try:
         with YoutubeDL(ydl_opts) as ydl:
+            url = parsed.urls[0]  # for metadata / listformats (first URL)
+            # -F / listformats: yt-dlp option; list formats and exit (no download)
+            if ydl_opts.get("listformats"):
+                ydl.extract_info(url, download=False)
+                return 0
+
             # Extract first to show metadata
-            info = ydl.extract_info(args.url, download=False)
+            info = ydl.extract_info(url, download=False)
 
             # Check if it's a playlist
+            download_playlist = not ydl_opts.get("noplaylist", True)
             if "entries" in info:
-                # It's a playlist
+                entries_list = list(info["entries"])
+                playlist_count = len(entries_list)
                 playlist_title = info.get("title", "Unknown Playlist")
-                playlist_count = len(list(info["entries"]))
+                first_entry_title = (
+                    entries_list[0].get("title", "Unknown") if entries_list else "Unknown"
+                )
 
-                if args.playlist:
+                if download_playlist:
                     print(f"Playlist: {playlist_title}", flush=True)
                     print(f"Total videos: {playlist_count}", flush=True)
                     print("Downloading entire playlist...", flush=True)
                 else:
+                    title = first_entry_title  # for final "Saved" message
                     print(
                         f"Warning: URL contains a playlist with {playlist_count} videos.",
                         flush=True,
                     )
                     print(
-                        "Downloading only the first video. Use --playlist to download all.",
+                        "Downloading only the first video. Use --yes-playlist to download all.",
                         flush=True,
                     )
             else:
@@ -392,34 +442,35 @@ def main() -> int:
                 print(f"Title: {title}", flush=True)
                 print(f"Duration: {duration} seconds", flush=True)
 
-            # Download
-            ydl.download([args.url])
+            # Download (all URLs from yt-dlp)
+            ydl.download(parsed.urls)
 
             # Prepare and print resulting filename
             try:
-                if args.audio_only:
-                    final_ext = args.audio_only
+                postprocessors = ydl_opts.get("postprocessors", [])
+                audio_pp = next(
+                    (p for p in postprocessors if p.get("key") == "FFmpegExtractAudio"),
+                    None,
+                )
+                if audio_pp:
+                    final_ext = audio_pp.get("preferredcodec", "mp3")
                 else:
-                    # With fast-remux, extension may vary (mp4, webm, mkv)
-                    # With force-mp4 and best-mp4, it should be mp4
                     final_ext = (
                         "mp4"
                         if args.container_strategy in ("force-mp4", "best-mp4")
                         else "*"
                     )
 
-                if args.playlist and "entries" in info:
-                    print(f"Playlist downloaded to: {args.output_dir}/", flush=True)
+                if download_playlist and "entries" in info:
+                    print("Playlist downloaded.", flush=True)
                 else:
                     if final_ext == "*":
-                        final_path = os.path.join(args.output_dir, f"{title}.*")
                         print(
-                            f"Saved to: {final_path} (check output directory for actual extension)",
+                            f"Saved: {title} (check current dir for actual extension)",
                             flush=True,
                         )
                     else:
-                        final_path = os.path.join(args.output_dir, f"{title}.{final_ext}")
-                        print(f"Saved to: {final_path}", flush=True)
+                        print(f"Saved: {title}.{final_ext}", flush=True)
             except Exception:
                 print("Download completed successfully.", flush=True)
 
