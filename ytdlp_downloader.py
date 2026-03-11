@@ -1,23 +1,28 @@
+#!/usr/bin/env python3
 """
 Requirements to run this script:
-
 1. Create and Activate Python Environment:
    - Create: python -m venv .venv
-   - Activate (Windows): .venv\Scripts\activate
+   - Activate (Windows): .venv\\Scripts\\activate
    - Activate (macOS/Linux): source .venv/bin/activate
-
 2. Install Python Dependencies:
    - yt_dlp: pip install "yt-dlp[default]" (use [default] so EJS solver scripts are included for YouTube)
    - If you see "n challenge" / "found 0 n function possibilities" on YouTube:
      - Update: pip install -U "yt-dlp[default]"
      - Or pass: --remote-components ejs:npm (lets yt-dlp fetch solver scripts; requires Deno/Bun)
      - See: https://github.com
-
 3. Install Deno (JavaScript runtime, required for YouTube and some extractors), min 2.0:
-   https://docs.deno.com
-   - Windows: winget install DenoLand.Deno OR irm https://deno.land | iex
-   - Linux: curl -fsSL https://deno.land | sh
-   - macOS: brew install deno
+   https://docs.deno.com/runtime/getting_started/installation/
+   - Windows: irm https://deno.land/install.ps1 | iex (PowerShell) OR winget install DenoLand.Deno
+   - Linux: curl -fsSL https://deno.land/install.sh | sh
+   - macOS: brew install deno OR curl -fsSL https://deno.land/install.sh | sh
+4. Install FFmpeg (required for merging video/audio streams and post-processing):
+   - Windows: winget install ffmpeg
+     OR download 'ffmpeg-git-essentials.7z' from https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-github
+        Extract and copy ffmpeg.exe/ffprobe.exe from 'bin' folder to this script's directory (or add to PATH)
+   - Linux: sudo apt install ffmpeg (Ubuntu/Debian) OR sudo yum install ffmpeg (CentOS/RHEL)
+   - macOS: brew install ffmpeg (requires Homebrew)
+5. Make script executable (Linux/macOS): chmod +x ytdlp_downloader.py
 """
 
 import argparse
@@ -92,44 +97,37 @@ def postprocessor_hook(d: Dict[str, Any]) -> None:
         print(f"[Post-Processor] Completed: {postprocessor}", flush=True)
 
 
+def print_ffmpeg_install_hint(os_name: str) -> None:
+    """Print OS-specific installation instructions for ffmpeg."""
+    if os_name == "Windows":
+        print(
+            "To install ffmpeg, run 'winget install ffmpeg'\n"
+            "  OR download 'ffmpeg-git-essentials.7z' from: https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-github\n"
+            "     Extract and copy ffmpeg.exe/ffprobe.exe from 'bin' folder to this script's directory (or add to PATH).",
+            flush=True,
+        )
+    elif os_name == "Linux":
+        print(
+            "To install ffmpeg, run 'sudo apt install ffmpeg' (Ubuntu/Debian) or 'sudo yum install ffmpeg' (CentOS/RHEL).",
+            flush=True,
+        )
+    elif os_name == "Darwin":  # macOS
+        print(
+            "To install ffmpeg, run 'brew install ffmpeg' (requires Homebrew).",
+            flush=True,
+        )
+    else:
+        print("Please install ffmpeg for your operating system.", flush=True)
+
+
 def check_tool(tool: str) -> bool:
     """
     Check if a tool (ffmpeg/ffprobe) is installed and functional.
     Validates across Windows, Linux, and macOS.
     Returns True if tool is available, False otherwise.
     """
-    # Check if tool exists in PATH
     if not shutil.which(tool):
-        os_name = platform.system()
         print(f"Error: {tool} is not installed.", flush=True)
-
-        # Provide OS-specific installation instructions
-        if os_name == "Windows":
-            print(f"To install {tool} on Windows:", flush=True)
-            print(
-                "  1. Download 'ffmpeg-git-essentials.7z' from: https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-github",
-                flush=True,
-            )
-            print("  2. Extract the 7z/ZIP file", flush=True)
-            print(
-                "  3. Copy ffmpeg.exe and ffprobe.exe from the 'bin' folder to the same directory as this script",
-                flush=True,
-            )
-            print("  OR add the 'bin' folder to your system PATH", flush=True)
-            print("  OR run: winget install ffmpeg", flush=True)
-        elif os_name == "Linux":
-            print(
-                f"To install {tool}, run 'sudo apt install ffmpeg' (Ubuntu/Debian) or 'sudo yum install ffmpeg' (CentOS/RHEL).",
-                flush=True,
-            )
-        elif os_name == "Darwin":  # macOS
-            print(
-                f"To install {tool}, run 'brew install ffmpeg' (requires Homebrew).",
-                flush=True,
-            )
-        else:
-            print(f"Please install {tool} for your operating system.", flush=True)
-
         return False
 
     # Verify the tool actually executes
@@ -180,6 +178,7 @@ def check_dependencies() -> None:
     ffprobe_ok = check_tool("ffprobe")
 
     if not ffmpeg_ok or not ffprobe_ok:
+        print_ffmpeg_install_hint(os_name)
         print(
             "Error: Required dependencies are missing. Please install them to proceed.",
             flush=True,
