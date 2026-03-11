@@ -1,19 +1,23 @@
 """
 Requirements to run this script:
-  - yt_dlp: pip install "yt-dlp[default]"  (use [default] so EJS solver scripts are included for YouTube)
-  - Deno (JavaScript runtime, required for YouTube and some extractors), min 2.0:
-    https://docs.deno.com/runtime/getting_started/installation/
-    - Windows: winget install DenoLand.Deno  OR  irm https://deno.land/install.ps1 | iex
-    - Linux: curl -fsSL https://deno.land/install.sh | sh
-    - macOS: brew install deno
 
-  If you see "n challenge" / "found 0 n function possibilities" on YouTube:
-  - Update: pip install -U "yt-dlp[default]"
-  - Or pass: --remote-components ejs:npm  (lets yt-dlp fetch solver scripts; requires Deno/Bun)
-  See: https://github.com/yt-dlp/yt-dlp/wiki/EJS
+1. Create and Activate Python Environment:
+   - Create: python -m venv .venv
+   - Activate (Windows): .venv\Scripts\activate
+   - Activate (macOS/Linux): source .venv/bin/activate
 
-  YouTube login: OAuth is no longer supported. Use cookies (--cookies-file or --cookies).
-  See: https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies
+2. Install Python Dependencies:
+   - yt_dlp: pip install "yt-dlp[default]" (use [default] so EJS solver scripts are included for YouTube)
+   - If you see "n challenge" / "found 0 n function possibilities" on YouTube:
+     - Update: pip install -U "yt-dlp[default]"
+     - Or pass: --remote-components ejs:npm (lets yt-dlp fetch solver scripts; requires Deno/Bun)
+     - See: https://github.com
+
+3. Install Deno (JavaScript runtime, required for YouTube and some extractors), min 2.0:
+   https://docs.deno.com
+   - Windows: winget install DenoLand.Deno OR irm https://deno.land | iex
+   - Linux: curl -fsSL https://deno.land | sh
+   - macOS: brew install deno
 """
 import argparse
 import os
