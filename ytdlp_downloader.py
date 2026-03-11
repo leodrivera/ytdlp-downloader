@@ -19,6 +19,7 @@ Requirements to run this script:
    - Linux: curl -fsSL https://deno.land | sh
    - macOS: brew install deno
 """
+
 import argparse
 import os
 import shutil
