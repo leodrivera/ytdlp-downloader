@@ -1,38 +1,26 @@
 #!/usr/bin/env python3
 """
-Requirements to run this script:
-1. Create and Activate Python Environment:
-   - Create: python -m venv .venv
-   - Activate (Windows): .venv\\Scripts\\activate
-   - Activate (macOS/Linux): source .venv/bin/activate
-2. Install Python Dependencies:
-   - yt_dlp: pip install "yt-dlp[default]" (use [default] so EJS solver scripts are included for YouTube)
-   - If you see "n challenge" / "found 0 n function possibilities" on YouTube:
-     - Update: pip install -U "yt-dlp[default]"
-     - Or pass: --remote-components ejs:npm (lets yt-dlp fetch solver scripts; requires Deno/Bun)
-     - See: https://github.com
-3. Install Deno (JavaScript runtime, required for YouTube and some extractors), min 2.0:
-   https://docs.deno.com/runtime/getting_started/installation/
-   - Windows: irm https://deno.land/install.ps1 | iex (PowerShell) OR winget install DenoLand.Deno
-   - Linux: curl -fsSL https://deno.land/install.sh | sh
-   - macOS: brew install deno OR curl -fsSL https://deno.land/install.sh | sh
-4. Install FFmpeg (required for merging video/audio streams and post-processing):
-   - Windows: winget install ffmpeg
-     OR download 'ffmpeg-git-essentials.7z' from https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-github
-        Extract and copy ffmpeg.exe/ffprobe.exe from 'bin' folder to this script's directory (or add to PATH)
-   - Linux: sudo apt install ffmpeg (Ubuntu/Debian) OR sudo yum install ffmpeg (CentOS/RHEL)
-   - macOS: brew install ffmpeg (requires Homebrew)
-5. Make script executable (Linux/macOS): chmod +x ytdlp_downloader.py
+A yt-dlp wrapper with dependency validation, update checks, and container strategies.
+
+Requirements (Python 3.9+, yt-dlp, Deno 2.0+, ffmpeg + ffprobe), full installation
+steps, option reference, and troubleshooting live in README.md:
+https://github.com/leodrivera/ytdlp-downloader#readme
+
+Run:
+  python ytdlp_downloader.py [SCRIPT OPTIONS] [YT-DLP OPTIONS] URL
+  ./ytdlp_downloader.py URL                    # Linux/macOS, script is executable
+  python ytdlp_downloader.py --script-help     # script options only
 """
 
+from __future__ import annotations
+
 import argparse
-import os
-import shutil
-import sys
-from typing import Any, Dict
 import platform
-import subprocess
 import re
+import shutil
+import subprocess
+import sys
+from typing import Any
 
 from yt_dlp import YoutubeDL, parse_options
 from yt_dlp.utils import DownloadError
@@ -54,32 +42,62 @@ class CustomLogger:
         print(f"Error: {msg}", flush=True)
 
 
-def progress_hook(d: Dict[str, Any]) -> None:
-    """Print simple progress information for downloads and post-processing."""
+def stream_label(info: dict[str, Any]) -> str:
+    """
+    Describe which stream a hook event refers to.
+
+    Video and audio arrive as separate downloads whenever yt-dlp has to merge them, so every
+    progress message would otherwise be indistinguishable from the previous one.
+    """
+    vcodec = info.get("vcodec") or "none"
+    acodec = info.get("acodec") or "none"
+    has_video, has_audio = vcodec != "none", acodec != "none"
+
+    if has_video and has_audio:
+        return "video+audio"
+    if has_video:
+        return f"video ({info.get('resolution') or info.get('format_note') or vcodec})"
+    if has_audio:
+        return f"audio ({acodec})"
+
+    # Direct file URLs go through the generic extractor, which reports no codecs at all.
+    ext = info.get("ext")
+    return f"file ({ext})" if ext else "file"
+
+
+def progress_hook(d: dict[str, Any]) -> None:
+    """Print simple progress information for downloads."""
     status = d.get("status")
+    label = stream_label(d.get("info_dict") or {})
 
     if status == "downloading":
         percent = d.get("_percent_str", "N/A")
         speed = d.get("_speed_str", "N/A")
         eta = d.get("_eta_str", "N/A")
-        print(f"Downloading: {percent} at {speed}, ETA: {eta}", flush=True)
+        print(f"Downloading {label}: {percent} at {speed}, ETA: {eta}", flush=True)
 
     elif status == "finished":
-        print("Download finished. Starting post-processing...", flush=True)
-
-    elif status == "processing":
-        # Post-processing status
-        postprocessor = d.get("postprocessor", "Unknown")
-        print(f"Post-processing: {postprocessor}", flush=True)
+        print(f"Finished downloading {label}.", flush=True)
 
     elif status == "error":
-        print("Error occurred during processing.", flush=True)
+        print(f"Error while downloading {label}.", flush=True)
 
 
-def postprocessor_hook(d: Dict[str, Any]) -> None:
+_last_pp_event: tuple[Any, ...] | None = None
+
+
+def postprocessor_hook(d: dict[str, Any]) -> None:
     """Hook specifically for post-processor progress."""
+    global _last_pp_event
+
     status = d.get("status")
     postprocessor = d.get("postprocessor", "Processing")
+
+    # yt-dlp fires some post-processor hooks twice with an identical payload; report once.
+    event = (status, postprocessor, (d.get("info_dict") or {}).get("filepath"))
+    if event == _last_pp_event:
+        return
+    _last_pp_event = event
 
     if status == "started":
         print(f"[Post-Processor] Started: {postprocessor}", flush=True)
