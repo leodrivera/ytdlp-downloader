@@ -28,9 +28,11 @@ git clone https://github.com/leodrivera/ytdlp-downloader.git
 cd ytdlp-downloader
 
 # 2. Create and activate a virtual environment
-python -m venv .venv
-source .venv/bin/activate        # Linux / macOS
-.venv\Scripts\activate           # Windows
+# Debian/Ubuntu: if venv creation fails with "ensurepip is not available",
+# install the matching package first, e.g. sudo apt install python3.12-venv
+python3 -m venv .venv             # Linux / macOS (use `python` on Windows)
+source .venv/bin/activate         # Linux / macOS
+.venv\Scripts\activate            # Windows
 
 # 3. Install yt-dlp
 pip install "yt-dlp[default]"
@@ -38,20 +40,21 @@ pip install "yt-dlp[default]"
 # 4. Install Deno (https://deno.com)
 # Windows:   winget install DenoLand.Deno
 # Linux/mac: curl -fsSL https://deno.land/install.sh | sh
+# If `deno --version` isn't found in a new terminal, run `source ~/.deno/env`
+# (the installer appends this to ~/.bashrc, but non-bash/non-interactive
+# shells won't pick it up automatically — check with `echo $SHELL`)
 
 # 5. Install ffmpeg
 # Windows:   winget install ffmpeg
 # Ubuntu:    sudo apt install ffmpeg
 # macOS:     brew install ffmpeg
-
-# 6. (Linux/macOS) Make the script executable
-chmod +x ytdlp_downloader.py
 ```
 
 ## Usage
 
 ```
-python ytdlp_downloader.py [SCRIPT OPTIONS] [YT-DLP OPTIONS] URL
+python ytdlp_downloader.py [SCRIPT OPTIONS] [YT-DLP OPTIONS] URL   # Windows
+python3 ytdlp_downloader.py [SCRIPT OPTIONS] [YT-DLP OPTIONS] URL  # Linux / macOS
 ```
 
 Any option not listed below is forwarded directly to yt-dlp.
