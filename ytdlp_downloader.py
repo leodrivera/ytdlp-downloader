@@ -164,7 +164,7 @@ def check_tool(tool: str) -> bool:
     except FileNotFoundError:
         print(f"Error: {tool} not found in PATH.", flush=True)
         return False
-    except Exception as e:
+    except (OSError, ValueError) as e:
         print(f"Error: Unexpected error checking {tool}: {e}", flush=True)
         return False
 
@@ -188,41 +188,45 @@ def check_dependencies() -> None:
     print("All dependencies validated successfully.", flush=True)
 
 
-def build_ydl_opts(args: argparse.Namespace) -> Dict[str, Any]:
-    """Build default yt-dlp options. Use extra args (e.g. -F, -f, -x) for yt-dlp options."""
-    # Video: container strategy; format/audio/playlist/resume come from extra if passed
-    if args.container_strategy == "best-mp4":
-        format_str = (
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
-            "bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/"
-            "bestvideo[ext=mp4]+bestaudio/bestvideo+bestaudio[ext=m4a]"
-        )
-    else:
-        format_str = "bestvideo+bestaudio/best"
+def build_default_argv(args: argparse.Namespace, extra: list[str]) -> list[str]:
+    """
+    Build the script's defaults as native yt-dlp arguments.
 
-    if args.container_strategy == "force-mp4":
-        postprocessors = [
-            {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
-        ]
-    else:
-        postprocessors = [
-            {"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}
-        ]
+    These are placed *before* the user's arguments so that yt-dlp's own parser resolves
+    precedence: for repeated options the last occurrence wins, so anything the user passes
+    explicitly overrides the default here.
+    """
+    argv = ["-o", "./%(title)s.%(ext)s", "--no-playlist"]
 
-    # Default: current dir. Override with yt-dlp -o in extra (path + template).
-    outtmpl = os.path.join(".", "%(title)s.%(ext)s")
-    ydl_opts: Dict[str, Any] = {
-        "format": format_str,
-        "outtmpl": outtmpl,
+    # The script does its own update check; silence yt-dlp's outdated warning when it is off.
+    if not args.check_updates:
+        argv.append("--no-update")
+
+    # Audio-only downloads have no video container to remux or recode: adding those
+    # post-processors would run them over the extracted audio file.
+    if "-x" in extra or "--extract-audio" in extra:
+        return argv
+
+    # Container strategy: presets over native remux/recode/format-sort options.
+    if args.container_strategy == "fast-remux":
+        # Copy streams into MP4 when the codecs allow it; keep the original container otherwise.
+        argv += ["--remux-video", "mp4"]
+    elif args.container_strategy == "best-mp4":
+        # Prefer MP4/M4A sources so the remux above succeeds without re-encoding.
+        argv += ["-S", "ext:mp4:m4a", "--remux-video", "mp4"]
+    elif args.container_strategy == "force-mp4":
+        argv += ["--recode-video", "mp4"]
+
+    return argv
+
+
+def build_script_ydl_opts() -> dict[str, Any]:
+    """yt-dlp options with no command-line equivalent (logging and progress reporting)."""
+    return {
         "logger": CustomLogger(),
         "progress_hooks": [progress_hook],
         "postprocessor_hooks": [postprocessor_hook],
-        "postprocessors": postprocessors,
-        "noplaylist": True,  # override with --yes-playlist in extra to download playlists
-        "continuedl": True,
-        "nooverwrites": False,
     }
-    return ydl_opts
 
 
 def _run_ytdlp_update_check() -> tuple[bool, str, bool]:
@@ -237,6 +241,7 @@ def _run_ytdlp_update_check() -> tuple[bool, str, bool]:
             capture_output=True,
             text=True,
             timeout=15,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return False, "Warning: Update check timed out.", False
@@ -269,7 +274,7 @@ def main() -> int:
             "  # Download entire playlist\n"
             '  python ytdlp_downloader.py --yes-playlist "https://www.youtube.com/playlist?list=PLxxxxxx"\n\n'
             "  # Audio-only (mp3, 192k)\n"
-            '  python ytdlp_downloader.py -x --audio-format mp3 --audio-quality 192 "URL" -o "./downloads/%(title)s.%(ext)s"\n\n'
+            '  python ytdlp_downloader.py -x --audio-format mp3 --audio-quality 192K "URL" -o "./downloads/%(title)s.%(ext)s"\n\n'
             "  # Skip update check (check is on by default; script stops if outdated)\n"
             '  python ytdlp_downloader.py --no-check-updates "URL"\n\n'
             "  # Fast remux strategy\n"
@@ -350,14 +355,15 @@ def main() -> int:
     if not extra:
         parser.error("pass a URL and/or yt-dlp options (e.g. URL, -U, --version, -F URL)")
 
-    # Let yt-dlp parse all arguments (URL, -F, -f, -U, etc.); no argv[0] so URLs are correct
+    # Let yt-dlp parse everything (URL, -F, -f, -U, ...); no argv[0] so URLs are correct.
+    # Script defaults go first, so any option the user repeats later wins.
     try:
-        parsed = parse_options(extra)
-    except Exception as e:
+        parsed = parse_options(build_default_argv(args, extra) + extra)
+    except Exception as e:  # noqa: BLE001 - yt-dlp raises assorted types on bad options
         print(f"Error parsing yt-dlp arguments: {e}", flush=True)
         return 1
 
-    ydl_opts = {**build_ydl_opts(args), **(parsed.ydl_opts or {})}
+    ydl_opts = {**(parsed.ydl_opts or {}), **build_script_ydl_opts()}
 
     # No URLs: delegate to yt-dlp for -U, --version, cookie export, etc.
     if not parsed.urls:
@@ -365,6 +371,7 @@ def main() -> int:
             result = subprocess.run(
                 [sys.executable, "-m", "yt_dlp"] + extra,
                 shell=False,
+                check=False,
             )
             return result.returncode
         except FileNotFoundError:
@@ -388,6 +395,7 @@ def main() -> int:
                     result = subprocess.run(
                         [sys.executable, "-m", "pip", "install", "-U", "yt-dlp[default]", "--no-warn-script-location"],
                         shell=False,
+                        check=False,
                     )
                     if result.returncode == 0:
                         print("yt-dlp updated successfully. Run the script again to continue.", flush=True)
@@ -398,9 +406,6 @@ def main() -> int:
             else:
                 print("Script stopped. Update yt-dlp and run again, or use --no-check-updates to skip.", flush=True)
             return 1
-        ydl_opts["warn_when_outdated"] = True
-    else:
-        ydl_opts["warn_when_outdated"] = False
 
     check_dependencies()
 
@@ -446,8 +451,12 @@ def main() -> int:
                 print(f"Title: {title}", flush=True)
                 print(f"Duration: {duration} seconds", flush=True)
 
-            # Download (all URLs from yt-dlp)
-            ydl.download(parsed.urls)
+            # Download (all URLs from yt-dlp). Errors during download or post-processing are
+            # reported through the logger and surface here as a non-zero return code.
+            retcode = ydl.download(parsed.urls)
+            if retcode:
+                print("Download failed. See the errors above.", flush=True)
+                return retcode
 
             # Prepare and print resulting filename
             try:
@@ -456,14 +465,20 @@ def main() -> int:
                     (p for p in postprocessors if p.get("key") == "FFmpegExtractAudio"),
                     None,
                 )
+                recode_pp = next(
+                    (p for p in postprocessors if p.get("key") == "FFmpegVideoConvertor"),
+                    None,
+                )
                 if audio_pp:
-                    final_ext = audio_pp.get("preferredcodec", "mp3")
+                    # "best" means "keep the source codec", so the extension is unknown here.
+                    codec = audio_pp.get("preferredcodec") or "best"
+                    final_ext = "*" if codec == "best" else codec
+                elif recode_pp:
+                    # Recoding always produces the target container; remuxing may fall back
+                    # to the original one, so its extension cannot be predicted here.
+                    final_ext = recode_pp.get("preferedformat", "*")
                 else:
-                    final_ext = (
-                        "mp4"
-                        if args.container_strategy in ("force-mp4", "best-mp4")
-                        else "*"
-                    )
+                    final_ext = "*"
 
                 if download_playlist and "entries" in info:
                     print("Playlist downloaded.", flush=True)
@@ -475,14 +490,14 @@ def main() -> int:
                         )
                     else:
                         print(f"Saved: {title}.{final_ext}", flush=True)
-            except Exception:
+            except (AttributeError, KeyError, TypeError):
                 print("Download completed successfully.", flush=True)
 
         return 0
     except DownloadError as e:
         print(f"Download error: {e}", flush=True)
         return 1
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - top-level guard: report and exit non-zero
         print(f"Unexpected error: {e}", flush=True)
         return 1
 
