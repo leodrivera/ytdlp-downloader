@@ -122,6 +122,19 @@ Any option not listed below is forwarded directly to yt-dlp.
 | `--check-updates` / `--no-check-updates` | enabled | Check for yt-dlp updates before downloading. If outdated, the script stops without downloading; when yt-dlp was installed via pip it first offers to run the update for you |
 | `--script-help` | — | Show this script's help and exit. Note `-h`/`--help` is forwarded to yt-dlp instead |
 
+### Controlling output
+
+The script's own messages follow yt-dlp's verbosity flags:
+
+| Flag | Effect |
+|---|---|
+| *(none)* | Dependency check, title, per-chunk progress, post-processor steps, final filename |
+| `--no-progress` | Same, without the percentage lines |
+| `-q` / `--quiet` | Errors only — nothing on success |
+
+Errors are never silenced, so `-q` still reports a failed download and exits non-zero.
+`-F` also keeps printing its format table under `-q`, since that output *is* the result.
+
 ### Pass-through yt-dlp options (examples)
 
 | Flag | Effect |
@@ -175,6 +188,10 @@ python ytdlp_downloader.py -h              # yt-dlp's own help
 
 # Skip the update check
 python ytdlp_downloader.py --no-check-updates "URL"
+
+# Quieter output: milestones only, or nothing at all
+python ytdlp_downloader.py --no-progress "URL"
+python ytdlp_downloader.py -q "URL"
 ```
 
 ## Picking a specific format
